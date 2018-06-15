@@ -1,0 +1,613 @@
+---
+title: "St. Louis County Jail Data"
+output:
+  html_notebook: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r, echo=FALSE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(purrr)
+library(extrafont)
+library(scales)
+```
+
+```{r}
+# Load fonts
+font_import()
+loadfonts()
+```
+
+```{r, echo=FALSE, message=FALSE, warning=TRUE}
+files <- list.files("data/clean", pattern = "Bookings", ignore.case = TRUE)
+
+map(files, function(fn) { read_csv(paste("data", "clean", fn, sep = "/")) }) %>%
+  bind_rows() -> stl_jail_data
+```
+
+After wrangling all of the spreadsheets together, let's ensure that the we have a giant data set, and that the data start at the beginning of 2010 and end at the end of 2017.
+
+```{r, message=FALSE, echo=FALSE, results='hide', warning=TRUE}
+dim(stl_jail_data)
+head(stl_jail_data)
+tail(stl_jail_data)
+```
+
+The Date/Time column also has a lot of extra info, and we only need the year. We'll extract the year and add it as a new column. There are also 10 entries whose dates are coded incorrectly, so we need to remove them for any groupings that depend on the date.
+
+```{r, echo=FALSE, results='hide', warning=FALSE}
+bookings_with_dates <- stl_jail_data[!is.na(stl_jail_data$BOOKING_DATE_TIME),]
+jail_years <- map(bookings_with_dates$BOOKING_DATE_TIME,
+                  function(date){
+                    year(mdy(strsplit(date, " ")[[1]][[1]]))
+                  })
+
+stl_jail_data_with_dates <- bookings_with_dates %>%
+  mutate(BOOKING_YEAR = unlist(jail_years)) %>%
+  filter(!BOOKING_YEAR %in% c(413, 520, 2729, 431, 2029))       # Filter out 10 wrong dates
+
+write_csv(stl_jail_data_with_dates, "stl_jail_data_with_dates.csv")
+
+# stl_jail_data_with_dates <- read_csv("stl_jail_data_with_dates.csv")
+```
+
+## Questions to answer
+
+### Cases by disposition
+```{r}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, DISPOSITION) %>% 
+  summarise(Total_Cases = n()) -> disposition_by_year
+
+disposition_by_year
+```
+
+```{r}
+bail_dispo_codes <- data.frame(Code = c("PRF", "PRO", "ROR", "TEN", "PTR"), 
+                          Dispostion = c("Professional Bond Posted","Property Bond Posted","Recognizance", "10% Bond Posted", "Pretrial Release"))
+knitr::kable(bail_dispo_codes)
+```
+
+```{r}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, DISPOSITION) %>% 
+  filter(DISPOSITION %in% bail_dispo_codes$Code) %>% 
+  summarise(Total_Cases = n()) %>% 
+  ggplot(aes(x = DISPOSITION, y = Total_Cases)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Disposition Code")
+gg <- gg + ylab("Total Cases")
+gg <- gg + ggtitle("Bookings by bond code, 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5), axis.text.x = element_text(angle = 90))
+gg
+
+# ggsave("bookings-by-bond-type.png", plot = gg, device = "png")
+```
+
+### Days confined by disposition
+
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DAYS_CONFINED > 0) %>% 
+  filter(DISPOSITION %in% c("PRF", "PRO", "ROR", "TEN", "CSH")) %>% 
+  filter(DISPOSITION != "PTR") %>% 
+  group_by(BOOKING_YEAR, DISPOSITION) %>% 
+  summarize(Average_Days_Confined = mean(DAYS_CONFINED, na.rm = TRUE)) %>% 
+  ggplot(aes(x = reorder(DISPOSITION, Average_Days_Confined) , y = Average_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Disposition Code")
+gg <- gg + ylab("Average Days Confined")
+gg <- gg + ggtitle("Average days confined by disposition code (bonds), 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5), axis.text.x = element_text(angle = 90))
+gg
+
+# ggsave("days-confined-by-bond-type.png", plot = gg, device = "png")
+```
+
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DAYS_CONFINED > 0) %>% 
+  filter(DISPOSITION %in% c("DSM", "FTP", "NP", "SVT")) %>% 
+  filter(DISPOSITION != "PTR") %>% 
+  group_by(BOOKING_YEAR, DISPOSITION) %>% 
+  summarize(Average_Days_Confined = mean(DAYS_CONFINED, na.rm = TRUE)) %>% 
+  ggplot(aes(x = reorder(DISPOSITION, Average_Days_Confined), y = Average_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Disposition Code")
+gg <- gg + ylab("Average Days Confined")
+gg <- gg + ggtitle("Average days confined by disposition code (bonds), 2010-2017")
+gg <- gg + theme(axis.text.x = element_text(angle = 90))
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5), axis.text.x = element_text(angle = 90))
+gg
+
+# ggsave("days-confined-by-dispo-code.png", plot = gg, device = "png")
+```
+
+### Total cases per year by disposition code
+```{r}
+(stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, DISPOSITION) %>% 
+  summarise(Total_Cases = n()) -> total_cases_by_dispo_by_year)
+
+write_csv(total_cases_by_dispo_by_year, "total_cases_by_dispo_by_year.csv")
+```
+## Bookings Per Year By Dispo
+
+```{r}
+total_cases_by_dispo_by_year %>% 
+  filter(DISPOSITION %in% c("FTP", "DSM", "NP")) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Cases, col = DISPOSITION)) -> gg
+
+gg <- gg + geom_line()
+gg <- gg + theme_minimal()
+gg <- gg + scale_color_manual(values = c("#ffd700","#ea5f94","#0000ff"),
+                              name = "Disposition",
+                              labels = c("Dismissed", "Failure to prosecute", "Nolle prosequi"))
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Total number of bookings")
+gg <- gg + ggtitle("Bookings per year by disposition")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("bookings-DSM-FTP-NP.png", plot = gg, device = "png")
+```
+
+```{r}
+total_cases_by_dispo_by_year %>% 
+  filter(DISPOSITION %in% c("SVT")) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Cases)) -> gg
+
+gg <- gg + geom_line(color = "#0000ff")
+gg <- gg + theme_minimal()
+# gg <- gg + scale_color_manual(values = c("#ffd700","#ea5f94","#0000ff"),
+#                               name = "Disposition",
+#                               labels = c("Dismissed", "Failure to prosecute", "Nolle prosequi"))
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Total number of bookings")
+gg <- gg + ggtitle("Bookings resulting in time served dispositions")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("bookings-time-served.png", plot = gg, device = "png")
+```
+### Days confined by disposition
+
+```{r}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, DISPOSITION) %>%
+  summarize(Average_Days_Confined = mean(DAYS_CONFINED, na.rm = TRUE)) -> mean_days_confined_by_dispo
+
+mean_days_confined_by_dispo
+```
+```{r}
+mean_days_confined_by_dispo %>% 
+  filter(DISPOSITION == "SVT") %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Average_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .3)
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Average days confined")
+gg <- gg + ggtitle("Average days confined for cases resulting in time served")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("aggregate-days-confined-SVT.png", plot = gg, device = "png")
+```
+```{r}
+total_days_confined_by_year <- stl_jail_data_with_dates %>% 
+  filter(DISPOSITION == "DSM") %>% 
+  group_by(BOOKING_YEAR, IMN) %>% 
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n()))
+  
+total_days_confined_by_year
+```
+
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DISPOSITION == "DSM") %>% 
+  group_by(BOOKING_YEAR, IMN) %>%
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .3)
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Total days confined")
+gg <- gg + ggtitle("Total days confined for cases resulting in dismissals")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("aggregate-days-confined-DSM.png", plot = gg, device = "png")
+```
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DISPOSITION == "DSM") %>% 
+  group_by(BOOKING_YEAR, IMN) %>%
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  hux(add_colnames = TRUE) %>% 
+  set_number_format(0)
+```
+
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DISPOSITION == "NP") %>% 
+  group_by(BOOKING_YEAR, IMN) %>% 
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .3)
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Total days confined")
+gg <- gg + ggtitle("Total days confined for cases resulting in nolle prosequi dispositions")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("aggregate-days-confined-NP.png", plot = gg, device = "png")
+```
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DISPOSITION == "FTP") %>% 
+  group_by(BOOKING_YEAR, IMN) %>% 
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .3)
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Total days confined")
+gg <- gg + ggtitle("Total days confined for cases resulting in failure to prosecute")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("aggregate-days-confined-FTP.png", plot = gg, device = "png")
+```
+
+### Total days confined per year
+```{r}
+stl_jail_data_with_dates %>%
+  group_by(BOOKING_YEAR, IMN) #%>% 
+  # distinct(IMN)
+  
+  #%>% 
+  # group_by(BOOKING_YEAR) %>%
+  # summarise(Total_Days_Confined = sum(DAYS_CONFINED))
+```
+
+```{r}
+stl_jail_data_with_dates %>%
+  group_by(BOOKING_YEAR, IMN) %>%
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .3)
+gg <- gg + scale_y_continuous(labels = comma)
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Aggregate days confined")
+gg <- gg + ggtitle("Total days confined per year")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("aggregate-days-confined.png", plot = gg, device = "png")
+```
+
+
+### Days confined by gender
+
+```{r}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, SEX) %>%
+  summarize(Average_Days_Confined = mean(DAYS_CONFINED, na.rm = TRUE)) -> mean_days_confined_by_gender
+
+mean_days_confined_by_gender
+```
+```{r}
+mean_days_confined_by_gender %>% 
+  ggplot(aes(x = SEX, y = Average_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Gender")
+gg <- gg + ylab("Average Days Confined")
+gg <- gg + ggtitle("Average days confined by gender in St. Louis County, 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg 
+
+# ggsave("incarceration-by-gender.png", plot = gg, device = "png")
+
+```
+```{r}
+stl_jail_data_with_dates %>%
+  group_by(BOOKING_YEAR, IMN, SEX) %>% 
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>%
+  group_by(BOOKING_YEAR, SEX) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn))
+  # summarise(Total_Days_Confined = sum(days_per_imn)) #%>% 
+```
+
+```{r}
+stl_jail_data_with_dates %>%
+  group_by(BOOKING_YEAR, IMN, SEX) %>% 
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>%
+  group_by(BOOKING_YEAR, SEX) %>% 
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  ggplot(aes(x = SEX, y = Total_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + scale_y_continuous(labels = comma)
+gg <- gg + xlab("Gender")
+gg <- gg + ylab("Total Days Confined")
+gg <- gg + ggtitle("Aggregate days confined in St. Louis County by gender, 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg 
+
+# ggsave("aggregte-incarceration-by-gender.png", plot = gg, device = "png")
+
+```
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(OFFENSE_TYPE == "M") %>% 
+  group_by(BOOKING_YEAR, IMN) %>%
+  summarise(days_per_imn = (sum(DAYS_CONFINED) / n())) %>%
+  summarise(Total_Days_Confined = sum(days_per_imn)) %>% 
+  # summarise(Total_Days_Confined = sum(DAYS_CONFINED)) %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Total_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000ff", width = .3)
+gg <- gg + scale_y_continuous(labels = comma)
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Booking year")
+gg <- gg + ylab("Aggregate days confined")
+gg <- gg + ggtitle("Total days confined per year for misdemeanor cases")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg 
+
+# ggsave("total-misdemeanor-days-confined.png", plot = gg, device = "png")
+```
+
+```{r}
+mean_days_confined_by_gender %>%
+  filter(SEX == "F") %>% 
+  ggplot(aes(x = BOOKING_YEAR, y = Average_Days_Confined)) -> gg
+
+gg <- gg + geom_line(color = "#0000FF")
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Year")
+gg <- gg + ylab("Average Days Confined")
+gg <- gg + ggtitle("Average length of confinement for women in St. Louis County, 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("average-length-of-confinement-for-women.png", plot = gg, device = "png")
+```
+
+```{r}
+stl_jail_data_with_dates %>% 
+  filter(DAYS_CONFINED > 0) %>%
+  group_by(BOOKING_YEAR, SEX) %>%
+  summarise(Total_Confined = n()) -> total_confined_by_gender_by_year
+
+total_confined_by_gender_by_year
+```
+
+```{r}
+total_confined_by_gender_by_year %>% 
+    ggplot(aes(x = SEX, y = Total_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000FF", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Gender")
+gg <- gg + ylab("Total number of bookings resulting in confinement")
+gg <- gg + ggtitle("Bookings resulting in confinement by gender, 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("bookings-resulting-in-confinement-by-gender-barplot.png", plot = gg, device = "png")
+```
+
+```{r}
+total_confined_by_gender_by_year %>%
+    filter(SEX == "F") %>%
+    ggplot(aes(x = BOOKING_YEAR, y = Total_Confined)) -> gg
+
+gg <- gg + geom_line(color = "#0000FF")
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Gender")
+gg <- gg + ylab("Total number of bookings resulting in confinement (females only)")
+gg <- gg + ggtitle("Bookings resulting in confinement (females only), 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("bookings-resulting-in-confinement-for-women.png", plot = gg, device = "png")
+```
+```{r}
+total_confined_by_gender_by_year %>%
+    ggplot(aes(x = BOOKING_YEAR, y = Total_Confined, color = SEX)) -> gg
+
+gg <- gg + geom_line()
+gg <- gg + theme_minimal()
+gg <- gg + xlab("Gender")
+gg <- gg + ylab("Total number of bookings resulting in confinement")
+gg <- gg + ggtitle("Bookings resulting in confinement in St. Louis County, 2010-2017")
+gg <- gg + scale_color_manual(values = c("#ffd700","#ea5f94"),
+                              name = "Gender",
+                              labels = c("F", "M"))
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("bookings-resulting-in-confinement-by-gender.png", plot = gg, device = "png")
+```
+
+
+### Average number of days confined per offense type, per year.
+
+We're interested in seeing the average days confined by year and offense type.
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>%
+  filter(OFFENSE_TYPE != "D") %>% 
+  group_by(BOOKING_YEAR, OFFENSE_TYPE) %>%
+  summarise(Average_Days_Confined = mean(DAYS_CONFINED, na.rm = TRUE), Max_Days_Confined = max(DAYS_CONFINED), Median_Days_Confined = median(DAYS_CONFINED), Count = n()) -> summary_by_year_offense
+
+summary_by_year_offense
+```
+
+What does that look like visually?
+```{r, echo=FALSE}
+summary_by_year_offense %>% 
+  filter(BOOKING_YEAR != 2014 & OFFENSE_TYPE != "U") %>%            # Filter out one outlier in 2014
+  ggplot(aes(x = reorder(OFFENSE_TYPE, Average_Days_Confined), y = Average_Days_Confined)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000FF", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Offense Type")
+gg <- gg + ylab("Average Days Confined")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+ggsave("average-days-confined-by-offense-type.png", plot = gg, device = "png")
+```
+
+In order to get these bar charts, we had to remove one extreme outlier in the 2014 data. In the interests of completeness, this is that outlier:
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% filter(BOOKING_YEAR == 2014 & DAYS_CONFINED == 491 & ARREST_AGENCY == "JUSTICE SERVICES") %>% arrange(desc(OFFENSE_TYPE))
+```
+
+### Comparison of municipal bonds and criminal court bonds
+
+(Need to figure out which fields and which values are municipal/criminal for this one. It can't be as simple as the ones that do/don't have the word municipal in the name, can it?)
+```{r, echo=FALSE}
+# stl_jail_data_with_dates %>% 
+#   filter()
+```
+
+
+### Total cases per court by year
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, COURT_NAME) %>% 
+  summarise(Count = n()) %>%
+  arrange(BOOKING_YEAR, desc(Count))
+```
+
+### Total cases per arresting agency by year
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, ARREST_AGENCY) %>% 
+  summarise(Count = n()) %>%
+  arrange(BOOKING_YEAR, desc(Count))
+```
+
+### Total cases by charge per year
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, CHARGE_DESCRIPTION) %>% 
+  summarise(Count = n()) %>%
+  arrange(BOOKING_YEAR, desc(Count))
+```
+
+### Total cases by bond code per year
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR, BOND_CODE) %>% 
+  filter(BOND_CODE != "NA") %>% 
+  summarise(Count = n()) %>%
+  arrange(BOOKING_YEAR, desc(Count)) -> bond_code_by_booking_year
+
+bond_code_by_booking_year
+```
+
+```{r, echo=FALSE}
+
+bond_code_by_booking_year %>% 
+  ggplot(aes(x = reorder(BOND_CODE, Count), y = Count)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000FF", width = .8)
+gg <- gg + facet_grid(. ~ BOOKING_YEAR)
+gg <- gg + xlab("Bond code")
+gg <- gg + ylab("Total number of cases")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+
+gg
+
+# ggsave("total-cases-by-bond-code.png", plot = gg, device = "png")
+```
+
+### Average days confined by year
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  group_by(BOOKING_YEAR) %>% 
+  summarise(Average_Days_Confined = mean(DAYS_CONFINED), 
+            Max_Days_Confined = max(DAYS_CONFINED),
+            Median_Days_Confined = median(DAYS_CONFINED)) %>%
+  arrange(BOOKING_YEAR)
+```
+
+
+### Average days confined by offense
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  group_by(CHARGE_DESCRIPTION) %>% 
+  summarise(Average_Days_Confined = mean(DAYS_CONFINED), 
+            Max_Days_Confined = max(DAYS_CONFINED),
+            Median_Days_Confined = median(DAYS_CONFINED)) %>% 
+  arrange(desc(Average_Days_Confined))
+```
+
+### Total cases by offense type per year
+
+```{r, echo=FALSE}
+stl_jail_data_with_dates %>% 
+  filter(OFFENSE_TYPE != "D") %>% 
+  group_by(BOOKING_YEAR, OFFENSE_TYPE) %>% 
+  summarise(Count = n()) %>%
+  arrange(BOOKING_YEAR, desc(Count)) -> offense_type_by_year
+
+offense_type_by_year
+```
+
+```{r, echo=FALSE}
+
+offense_type_by_year %>% 
+  ggplot(aes(x = reorder(OFFENSE_TYPE, Count), y = Count)) -> gg
+
+gg <- gg + geom_bar(stat = "identity", fill = "#0000FF", width = .8)
+gg <- gg + facet_wrap(~ BOOKING_YEAR) 
+gg <- gg + xlab("Offense type")
+gg <- gg + ylab("Total number of cases")
+gg <- gg + ggtitle("Total cases by offense type, 2010-2017")
+gg <- gg + theme(text = element_text(family = "Fira Sans Light", size = 12, hjust = .5))
+gg
+
+# ggsave("total-cases-by-offense-type.png", plot = gg, device = "png")
+```
+
+
+
+
